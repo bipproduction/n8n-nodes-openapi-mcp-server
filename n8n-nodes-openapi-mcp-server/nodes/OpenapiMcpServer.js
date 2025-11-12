@@ -2,12 +2,28 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OpenapiMcpServer = void 0;
 const mcp_tool_convert_1 = require("../lib/mcp_tool_convert");
-let tools = []; // ✅ cache global tools
+// ======================================================
+// Cache tools per URL
+// ======================================================
+const toolsCache = new Map();
 // ======================================================
 // Load OpenAPI → MCP Tools
 // ======================================================
-async function loadTools(openapiUrl) {
-    tools = await (0, mcp_tool_convert_1.getMcpTools)(openapiUrl);
+async function loadTools(openapiUrl, filterTag, forceRefresh = false) {
+    const cacheKey = `${openapiUrl}::${filterTag}`;
+    // Jika tidak forceRefresh, gunakan cache
+    if (!forceRefresh && toolsCache.has(cacheKey)) {
+        return toolsCache.get(cacheKey);
+    }
+    console.log(`[MCP] 🔄 Refreshing tools from ${openapiUrl} ...`);
+    const fetched = await (0, mcp_tool_convert_1.getMcpTools)(openapiUrl, filterTag);
+    // 🟢 Log jumlah & daftar tools
+    console.log(`[MCP] ✅ Loaded ${fetched.length} tools`);
+    if (fetched.length > 0) {
+        console.log(`[MCP] Tools: ${fetched.map((t) => t.name).join(", ")}`);
+    }
+    toolsCache.set(cacheKey, fetched);
+    return fetched;
 }
 // ======================================================
 // Eksekusi Tool HTTP
@@ -38,9 +54,9 @@ async function executeTool(tool, args = {}, baseUrl, token) {
     };
 }
 // ======================================================
-// JSON-RPC Handler
+// JSON-RPC Handler (per node, per request)
 // ======================================================
-async function handleMCPRequest(request) {
+async function handleMCPRequest(request, tools) {
     const { id, method, params, credentials } = request;
     switch (method) {
         case "initialize":
@@ -58,12 +74,22 @@ async function handleMCPRequest(request) {
                 jsonrpc: "2.0",
                 id,
                 result: {
-                    tools: tools.map((t) => ({
-                        name: t.name,
-                        description: t.description,
-                        inputSchema: t.inputSchema,
-                        "x-props": t["x-props"],
-                    })),
+                    tools: tools.map((t) => {
+                        var _a;
+                        const inputSchema = typeof t.inputSchema === "object" && ((_a = t.inputSchema) === null || _a === void 0 ? void 0 : _a.type) === "object"
+                            ? t.inputSchema
+                            : {
+                                type: "object",
+                                properties: {},
+                                required: [],
+                            };
+                        return {
+                            name: t.name,
+                            description: t.description || "No description provided",
+                            inputSchema,
+                            "x-props": t["x-props"],
+                        };
+                    }),
                 },
             };
         case "tools/call": {
@@ -122,15 +148,12 @@ class OpenapiMcpServer {
             group: ['trigger'],
             version: 1,
             description: 'Runs an MCP Server inside n8n',
-            icon: 'fa:server',
+            icon: 'file:icon.svg',
             defaults: {
                 name: 'OpenAPI MCP Server'
             },
             credentials: [
-                {
-                    name: "openapiMcpServerCredentials",
-                    required: true,
-                },
+                { name: "openapiMcpServerCredentials", required: true },
             ],
             inputs: [],
             outputs: ['main'],
@@ -156,7 +179,47 @@ class OpenapiMcpServer {
                     default: "",
                     placeholder: "https://example.com/openapi.json",
                 },
+                {
+                    displayName: "Default Filter",
+                    name: "defaultFilter",
+                    type: "string",
+                    default: "",
+                    placeholder: "mcp | tag",
+                },
+                // 🟢 Tambahan agar terlihat jumlah tools di UI
+                {
+                    displayName: 'Available Tools (auto-refresh)',
+                    name: 'toolList',
+                    type: 'options',
+                    typeOptions: {
+                        loadOptionsMethod: 'refreshToolList',
+                        refreshOnOpen: true, // setiap node dibuka auto refresh
+                    },
+                    default: '',
+                    description: 'Daftar tools yang berhasil dimuat dari OpenAPI',
+                },
             ],
+        };
+        // ==================================================
+        // LoadOptions untuk tampil di dropdown
+        // ==================================================
+        this.methods = {
+            loadOptions: {
+                // 🟢 otomatis refetch setiap kali node dibuka
+                async refreshToolList() {
+                    const openapiUrl = this.getNodeParameter("openapiUrl", 0);
+                    const filterTag = this.getNodeParameter("defaultFilter", 0);
+                    if (!openapiUrl) {
+                        return [{ name: "❌ No OpenAPI URL provided", value: "" }];
+                    }
+                    const tools = await loadTools(openapiUrl, filterTag, true); // force refresh
+                    return tools.map((t) => ({
+                        name: t.name,
+                        value: t.name,
+                        description: t.description,
+                    }));
+                },
+            },
         };
     }
     // ==================================================
@@ -164,18 +227,18 @@ class OpenapiMcpServer {
     // ==================================================
     async webhook() {
         const openapiUrl = this.getNodeParameter("openapiUrl", 0);
-        if (!tools.length) {
-            await loadTools(openapiUrl);
-        }
+        const filterTag = this.getNodeParameter("defaultFilter", 0);
+        // 🟢 selalu refresh (agar node terbaru)
+        const tools = await loadTools(openapiUrl, filterTag, true);
         const creds = await this.getCredentials("openapiMcpServerCredentials");
         const body = this.getBodyData();
         if (Array.isArray(body)) {
-            const responses = body.map((r) => handleMCPRequest(Object.assign(Object.assign({}, r), { credentials: creds })));
+            const responses = body.map((r) => handleMCPRequest(Object.assign(Object.assign({}, r), { credentials: creds }), tools));
             return {
                 webhookResponse: await Promise.all(responses),
             };
         }
-        const single = await handleMCPRequest(Object.assign(Object.assign({}, body), { credentials: creds }));
+        const single = await handleMCPRequest(Object.assign(Object.assign({}, body), { credentials: creds }), tools);
         return {
             webhookResponse: single,
         };

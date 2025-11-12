@@ -125,27 +125,19 @@ async function handleMCPRequest(
             };
 
         case "tools/list":
+            // 🟢 Tambahkan jumlah dan daftar nama tools di respons
             return {
                 jsonrpc: "2.0",
                 id,
                 result: {
-                    tools: tools.map((t) => {
-                        const inputSchema =
-                            typeof t.inputSchema === "object" && t.inputSchema?.type === "object"
-                                ? t.inputSchema
-                                : {
-                                    type: "object",
-                                    properties: {},
-                                    required: [],
-                                };
-
-                        return {
-                            name: t.name,
-                            description: t.description || "No description provided",
-                            inputSchema,
-                            "x-props": t["x-props"],
-                        };
-                    }),
+                    count: tools.length,
+                    names: tools.map(t => t.name),
+                    tools: tools.map((t) => ({
+                        name: t.name,
+                        description: t.description,
+                        inputSchema: t.inputSchema,
+                        "x-props": t["x-props"],
+                    })),
                 },
             };
 

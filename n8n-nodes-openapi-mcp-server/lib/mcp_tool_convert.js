@@ -10,7 +10,7 @@ const lodash_1 = __importDefault(require("lodash"));
  * Convert OpenAPI 3.x JSON spec into MCP-compatible tool definitions (without run()).
  * Hanya menyertakan endpoint yang memiliki tag berisi "mcp".
  */
-function convertOpenApiToMcpTools(openApiJson) {
+function convertOpenApiToMcpTools(openApiJson, filterTag) {
     var _a, _b, _c;
     const tools = [];
     const paths = openApiJson.paths || {};
@@ -21,7 +21,7 @@ function convertOpenApiToMcpTools(openApiJson) {
         for (const [method, operation] of Object.entries(methods)) {
             const tags = Array.isArray(operation.tags) ? operation.tags : [];
             // ✅ exclude semua yang tidak punya tag atau tag-nya tidak mengandung "mcp"
-            if (!tags.length || !tags.some(t => t.toLowerCase().includes("mcp")))
+            if (!tags.length || !tags.some(t => t.toLowerCase().includes(filterTag)))
                 continue;
             const rawName = lodash_1.default.snakeCase(operation.operationId || `${method}_${path}`) || "unnamed_tool";
             const name = cleanToolName(rawName);
@@ -71,9 +71,9 @@ function cleanToolName(name) {
 /**
  * Ambil OpenAPI JSON dari endpoint dan konversi ke tools MCP
  */
-async function getMcpTools(url) {
+async function getMcpTools(url, filterTag) {
     const data = await fetch(url);
     const openApiJson = await data.json();
-    const tools = convertOpenApiToMcpTools(openApiJson);
+    const tools = convertOpenApiToMcpTools(openApiJson, filterTag);
     return tools;
 }
