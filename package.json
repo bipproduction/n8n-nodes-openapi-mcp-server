@@ -1,5 +1,5 @@
 {
-  "name": "n8n-nodes-openapi-mcp-server",
+  "name": "n8n-mcp-server",
   "type": "module",
   "private": true,
   "version": "1.0.6",
