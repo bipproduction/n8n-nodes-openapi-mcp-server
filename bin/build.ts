@@ -81,6 +81,8 @@ async function build() {
     console.log("🎉 Build complete!");
 }
 
+execSync("git add -A", { stdio: 'inherit' })
+execSync("git commit -m 'build'", { stdio: 'inherit' })
 execSync("cd src && npm version patch", { stdio: 'inherit' })
 build()
 
