@@ -24,14 +24,5 @@
   },
   "peerDependencies": {
     "typescript": "^5"
-  },
-  "n8n": {
-    "nodes": [
-      "dist/nodes/OpenapiMcpServer.js"
-    ],
-    "n8nNodesApiVersion": 1,
-    "credentials": [
-      "dist/credentials/OpenapiMcpServerCredentials.credentials.js"
-    ]
   }
 }
