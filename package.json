@@ -1,29 +1,37 @@
-
-  {
-  "name": "n8n-mcp-server",
+{
+  "name": "n8n-nodes-openapi-mcp-server",
   "type": "module",
   "private": true,
+  "version": "1.0.1",
   "scripts": {
-    "gen": "bunx tsc && cp package.txt n8n-nodes-openapi-mcp-server/package.json && cp icon.svg n8n-nodes-openapi-mcp-server/nodes/icon.svg"
+    "build": "bun bin/build.ts",
+    "publish": "bun bin/publish.ts"
   },
-  "dependencies": {
-    "express": "^5.1.0",
-    "lodash": "^4.17.21",
-    "n8n-core": "^1.117.1",
-    "n8n-workflow": "^1.116.0",
-    "nock": "^14.0.10",
-    "ssh2": "^1.17.0"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "express": "^5.1.0",
     "@types/bun": "latest",
     "@types/lodash": "^4.17.20",
     "@types/express": "^5.0.5",
     "@types/node": "^24.10.0",
     "@types/ssh2": "^1.15.5",
-    "prettier": "^3.6.2",
-    "ts-node": "^10.9.2"
+    "n8n-core": "^1.117.1",
+    "n8n-workflow": "^1.116.0",
+    "nock": "^14.0.10",
+    "ssh2": "^1.17.0",
+    "dedent": "^1.7.0",
+    "lodash": "^4.17.21"
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "n8n": {
+    "nodes": [
+      "dist/nodes/OpenapiMcpServer.js"
+    ],
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/OpenapiMcpServerCredentials.credentials.js"
+    ]
   }
 }

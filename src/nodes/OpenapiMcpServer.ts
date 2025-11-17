@@ -172,15 +172,17 @@ async function handleMCPRequest(
                     token
                 );
 
+                const data = result.data.data;
+                const isObject = typeof data === "object" && data !== null;
+
                 return {
                     jsonrpc: "2.0",
                     id,
                     result: {
                         content: [
-                            {
-                                type: "text",
-                                text: JSON.stringify(result, null, 2),
-                            },
+                            isObject
+                                ? { type: "json", data: data }
+                                : { type: "text", text: JSON.stringify(data || result.data || result) },
                         ],
                     },
                 };

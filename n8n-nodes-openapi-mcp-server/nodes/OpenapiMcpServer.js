@@ -106,15 +106,16 @@ async function handleMCPRequest(request, tools) {
                 const baseUrl = credentials === null || credentials === void 0 ? void 0 : credentials.baseUrl;
                 const token = credentials === null || credentials === void 0 ? void 0 : credentials.token;
                 const result = await executeTool(tool, (params === null || params === void 0 ? void 0 : params.arguments) || {}, baseUrl, token);
+                const data = result.data.data;
+                const isObject = typeof data === "object" && data !== null;
                 return {
                     jsonrpc: "2.0",
                     id,
                     result: {
                         content: [
-                            {
-                                type: "text",
-                                text: JSON.stringify(result, null, 2),
-                            },
+                            isObject
+                                ? { type: "json", data: data }
+                                : { type: "text", text: JSON.stringify(data || result.data || result) },
                         ],
                     },
                 };
