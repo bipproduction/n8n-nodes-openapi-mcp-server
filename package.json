@@ -1,11 +1,12 @@
 {
-  "name": "n8n-mcp-server",
+  "name": "n8n-mcp-server-hoock",
   "type": "module",
   "private": true,
   "version": "1.0.6",
   "scripts": {
     "build": "bun bin/build.ts",
-    "publish": "bun bin/publish.ts"
+    "version:update": "bun bin/version_update.ts",
+    "publish": "bun bin/build.ts && bun bin/version_update.ts && bun bin/publish.ts"
   },
   "dependencies": {},
   "devDependencies": {
