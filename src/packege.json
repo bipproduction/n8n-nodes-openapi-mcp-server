@@ -1,0 +1,23 @@
+{
+  "name": "n8n-nodes-openapi-mcp-server",
+  "version": "1.1.19",
+  "keywords": [
+    "n8n",
+    "n8n-nodes"
+  ],
+  "author": {
+    "name": "makuro",
+    "phone": "6289697338821"
+  },
+  "license": "ISC",
+  "description": "",
+  "n8n": {
+    "nodes": [
+      "nodes/OpenapiMcpServer.js"
+    ],
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "credentials/OpenapiMcpServerCredentials.credentials.js"
+    ]
+  }
+}

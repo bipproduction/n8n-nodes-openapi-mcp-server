@@ -81,6 +81,6 @@ async function build() {
     console.log("🎉 Build complete!");
 }
 
-execSync("npm version patch", { stdio: 'inherit' })
+execSync("cd src && npm version patch", { stdio: 'inherit' })
 build()
 
