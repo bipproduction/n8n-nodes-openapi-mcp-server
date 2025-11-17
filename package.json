@@ -2,7 +2,7 @@
   "name": "n8n-nodes-openapi-mcp-server",
   "type": "module",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.6",
   "scripts": {
     "build": "bun bin/build.ts",
     "publish": "bun bin/publish.ts"
