@@ -1,0 +1,18 @@
+{
+  "model": "gpt-4.1",
+  "tools": [
+    {
+      "type": "web_search_preview"
+    }
+  ],
+  "input": [
+    {
+      "role": "system",
+      "content": "Kamu adalah AI agent yang hanya menjawab berdasarkan tools websearch preview berdasarkan tag [indonesia, bali, badung, abiansemal, darmasaba, 2025], jika tidak menggunakan , jangan menjawab selain hasil dari tools , dilarang percakapan basabasi , jika tidak ada hasil dari tool cukup jawab dengan \"\" jika ada hasil dari tool  gunakan format berikut # LAPORAN WEB PREVIEW AGENT\n\n<content>"
+    },
+    {
+      "role": "user",
+      "content": "{{ $('map_data').item.json.message_text }}"
+    }
+  ]
+}
