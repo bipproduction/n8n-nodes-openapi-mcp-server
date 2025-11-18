@@ -6,7 +6,7 @@
   "scripts": {
     "build": "bun bin/build.ts",
     "version:update": "bun bin/version_update.ts",
-    "publish": "bun bin/build.ts && bun bin/version_update.ts && bun bin/publish.ts"
+    "publish": "bun bin/version_update.ts && bun bin/build.ts && bun bin/publish.ts"
   },
   "dependencies": {},
   "devDependencies": {
