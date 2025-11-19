@@ -1,6 +1,1 @@
-FAHMI=628123833845
-JUNAIDIL=62811380873
-curl --get \
-  --data-urlencode "nom=$JUNAIDIL" \
-  --data-urlencode "text=ngetes doang gak usah dibales" \
-  https://wa.wibudev.com/code
+curl -X POST https://local-makuro-n8n.wibudev.com/webhook/f732dd1a-e391-4e76-8d2e-a2d67f234b10/mcp

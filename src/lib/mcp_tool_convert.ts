@@ -342,15 +342,15 @@ function cleanToolName(name: string): string {
             .replace(/[^a-zA-Z0-9_]/g, "_")
             .replace(/_+/g, "_")
             .replace(/^_|_$/g, "")
-            .replace(/^(get|post|put|delete|patch|api)_/i, "")
-            .replace(/^(get_|post_|put_|delete_|patch_|api_)+/gi, "")
-            .replace(/(^_|_$)/g, "")
+            // ❗️ METHOD PREFIX TIDAK DIHAPUS LAGI (agar tidak duplicate)
+            .toLowerCase()
             || "unnamed_tool";
     } catch (error) {
         console.error("Error cleaning tool name:", error);
         return "unnamed_tool";
     }
 }
+
 
 /**
  * Ambil OpenAPI JSON dari endpoint dan konversi ke tools MCP
