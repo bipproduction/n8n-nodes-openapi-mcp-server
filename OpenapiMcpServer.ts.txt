@@ -50,11 +50,15 @@ type JSONRPCResponse = {
     jsonrpc: "2.0";
     id: string | number;
     result?: any;
-    error?: { code: number; message: string; data?: any };
+    error?: {
+        code: number;
+        message: string;
+        data?: any;
+    };
 };
 
 // ======================================================
-// EXECUTE TOOL — SUPPORT PATH, QUERY, HEADER, BODY, COOKIE
+// Eksekusi Tool HTTP
 // ======================================================
 async function executeTool(
     tool: any,
@@ -64,75 +68,24 @@ async function executeTool(
 ) {
     const x = tool["x-props"] || {};
     const method = (x.method || "GET").toUpperCase();
-    let path = x.path || `/${tool.name}`;
+    const path = x.path || `/${tool.name}`;
+    const url = `${baseUrl}${path}`;
 
-    const query: Record<string, any> = {};
-    const headers: Record<string, any> = {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    const opts: RequestInit = {
+        method,
+        headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
     };
 
-    let bodyPayload: any = undefined;
-
-    // ======================================================
-    // Pisahkan args berdasarkan OpenAPI parameter location
-    // ======================================================
-    if (Array.isArray(x.parameters)) {
-        for (const p of x.parameters) {
-            const name = p.name;
-            const value = args[name];
-            if (value === undefined) continue;
-
-            switch (p.in) {
-                case "path":
-                    path = path.replace(`{${name}}`, encodeURIComponent(value));
-                    break;
-
-                case "query":
-                    query[name] = value;
-                    break;
-
-                case "header":
-                    headers[name] = value;
-                    break;
-
-                case "cookie":
-                    headers["Cookie"] = `${name}=${value}`;
-                    break;
-
-                case "body":
-                case "requestBody":
-                    bodyPayload = value;
-                    break;
-
-                default:
-                    break;
-            }
-        }
-    } else {
-        // fallback → semua args dianggap body
-        bodyPayload = args;
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+        opts.body = JSON.stringify(args || {});
     }
-
-    // ======================================================
-    // Build Final URL
-    // ======================================================
-    let url = `${baseUrl}${path}`;
-    const qs = new URLSearchParams(query).toString();
-    if (qs) url += `?${qs}`;
-
-    // ======================================================
-    // Build Request Options
-    // ======================================================
-    const opts: RequestInit = { method, headers };
-    if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && bodyPayload !== undefined) {
-        opts.body = JSON.stringify(bodyPayload);
-    }
-
-    console.log(`[MCP] → Calling ${method} ${url}`);
 
     const res = await fetch(url, opts);
     const contentType = res.headers.get("content-type") || "";
+
     const data = contentType.includes("application/json")
         ? await res.json()
         : await res.text();
@@ -141,7 +94,6 @@ async function executeTool(
         success: res.ok,
         status: res.status,
         method,
-        url,
         path,
         data,
     };
@@ -216,16 +168,17 @@ async function handleMCPRequest(
                     token
                 );
 
-                const content = result.data?.data ?? result.data;
+                const data = result.data.data;
+                const isObject = typeof data === "object" && data !== null;
 
                 return {
                     jsonrpc: "2.0",
                     id,
                     result: {
                         content: [
-                            typeof content === "object"
-                                ? { type: "json", data: content }
-                                : { type: "text", text: JSON.stringify(content) },
+                            isObject
+                                ? { type: "json", data }
+                                : { type: "text", text: JSON.stringify(data || result.data || result) },
                         ],
                     },
                 };
@@ -261,7 +214,9 @@ export class OpenapiMcpServer implements INodeType {
         version: 1,
         description: 'Runs an MCP Server inside n8n',
         icon: 'file:icon.svg',
-        defaults: { name: 'OpenAPI MCP Server' },
+        defaults: {
+            name: 'OpenAPI MCP Server'
+        },
         credentials: [
             { name: "openapiMcpServerCredentials", required: true },
         ],
