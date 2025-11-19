@@ -74,7 +74,7 @@ function createToolFromOperation(
     tags: string[]
 ): McpTool | null {
     try {
-        const rawName = _.snakeCase(`${method}_${operation.operationId}` || `${method}_${path}`) || "unnamed_tool";
+        const rawName = _.snakeCase(`${operation.operationId}` || `${method}_${path}`) || "unnamed_tool";
         const name = cleanToolName(rawName);
 
         if (!name || name === "unnamed_tool") {
