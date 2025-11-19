@@ -34,7 +34,6 @@ export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string): M
 
     for (const [path, methods] of Object.entries(paths)) {
         if (!path || typeof path !== "string") continue;
-        if (path.startsWith("/mcp")) continue;
 
         if (!methods || typeof methods !== "object") continue;
 
@@ -75,7 +74,7 @@ function createToolFromOperation(
     tags: string[]
 ): McpTool | null {
     try {
-        const rawName = _.snakeCase(operation.operationId || `${method}_${path}`) || "unnamed_tool";
+        const rawName = _.snakeCase(`${method}_${operation.operationId}` || `${method}_${path}`) || "unnamed_tool";
         const name = cleanToolName(rawName);
 
         if (!name || name === "unnamed_tool") {
