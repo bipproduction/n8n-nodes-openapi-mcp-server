@@ -18,12 +18,11 @@ const toolsCache = new Map<string, CachedTools>();
 
 // ======================================================
 // Load OpenAPI → MCP Tools
-// (preserves original function name loadTools)
-// NOTE: filterTag now supports string | string[] (multi-select)
+// - preserves function name loadTools (do not rename)
+// - adds TTL, forceRefresh handling, and robust error handling
 // ======================================================
-async function loadTools(openapiUrl: string, filterTag: string | string[] = "", forceRefresh = false): Promise<any[]> {
-    const normalizedFilterKey = Array.isArray(filterTag) ? filterTag.join("|") : (filterTag ?? "");
-    const cacheKey = `${openapiUrl}::${normalizedFilterKey}`;
+async function loadTools(openapiUrl: string, filterTag: string, forceRefresh = false): Promise<any[]> {
+    const cacheKey = `${openapiUrl}::${filterTag || ""}`;
 
     try {
         const cached = toolsCache.get(cacheKey);
@@ -31,9 +30,8 @@ async function loadTools(openapiUrl: string, filterTag: string | string[] = "", 
             return cached.tools;
         }
 
-        console.log(`[MCP] 🔄 Refreshing tools from ${openapiUrl} with filter '${normalizedFilterKey}' ...`);
-        // Pass through filterTag in original shape (string | string[]) to getMcpTools.
-        const fetched = await getMcpTools(openapiUrl, filterTag as any);
+        console.log(`[MCP] 🔄 Refreshing tools from ${openapiUrl} ...`);
+        const fetched = await getMcpTools(openapiUrl, filterTag);
 
         console.log(`[MCP] ✅ Loaded ${fetched.length} tools`);
         if (fetched.length > 0) {
@@ -44,6 +42,7 @@ async function loadTools(openapiUrl: string, filterTag: string | string[] = "", 
         return fetched;
     } catch (err) {
         console.error(`[MCP] Failed to load tools from ${openapiUrl}:`, err);
+        // On failure, if cache exists return stale to avoid complete outage
         const stale = toolsCache.get(cacheKey);
         if (stale) {
             console.warn(`[MCP] Returning stale cached tools for ${cacheKey}`);
@@ -73,7 +72,9 @@ type JSONRPCResponse = {
 
 // ======================================================
 // EXECUTE TOOL — SUPPORT PATH, QUERY, HEADER, BODY, COOKIE
-// (preserves function name executeTool)
+// - preserves function name executeTool
+// - fixes cookie accumulation, query-array handling, path param safety,
+//   requestBody handling based on x.parameters + synthetic body param
 // ======================================================
 async function executeTool(
     tool: any,
@@ -91,42 +92,61 @@ async function executeTool(
 
     const query: Record<string, any> = {};
     const headers: Record<string, any> = {
+        // default content-type; may be overridden by header params or request
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
 
+    // Support multiple cookies: accumulate into array, then join
     const cookies: string[] = [];
+
     let bodyPayload: any = undefined;
 
+    // x.parameters may have been produced by converter.
+    // Expected shape: [{ name, in, schema?, required? }]
     if (Array.isArray(x.parameters)) {
         for (const p of x.parameters) {
             const name = p.name;
+            // allow alias e.g. body parameter named "__body" or "body"
             const value = args?.[name];
+
+            // If param not provided, skip (unless required, leave to tool to validate later)
             if (value === undefined) continue;
 
             try {
                 switch (p.in) {
                     case "path":
+                        // Safely replace only if placeholder exists
                         if (path.includes(`{${name}}`)) {
                             path = path.replace(new RegExp(`{${name}}`, "g"), encodeURIComponent(String(value)));
                         } else {
+                            // If path doesn't contain placeholder, append as query fallback
                             query[name] = value;
                         }
                         break;
+
                     case "query":
+                        // handle array correctly: produce repeated keys for URLSearchParams
+                        // Store as-is and handle later when building QS
                         query[name] = value;
                         break;
+
                     case "header":
                         headers[name] = value;
                         break;
+
                     case "cookie":
                         cookies.push(`${name}=${value}`);
                         break;
+
                     case "body":
                     case "requestBody":
+                        // prefer explicit body param; overwrite if multiple present
                         bodyPayload = value;
                         break;
+
                     default:
+                        // unknown param location — put into body as fallback
                         bodyPayload = bodyPayload ?? {};
                         bodyPayload[name] = value;
                         break;
@@ -136,6 +156,7 @@ async function executeTool(
             }
         }
     } else {
+        // fallback → semua args dianggap body
         bodyPayload = args;
     }
 
@@ -143,10 +164,15 @@ async function executeTool(
         headers["Cookie"] = cookies.join("; ");
     }
 
+    // ======================================================
+    // Build Final URL
+    // ======================================================
+    // Ensure baseUrl doesn't end with duplicate slashes
     const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
     let url = `${normalizedBase}${normalizedPath}`;
 
+    // Build query string with repeated keys if array provided
     const qsParts: string[] = [];
     for (const [k, v] of Object.entries(query)) {
         if (v === undefined || v === null) continue;
@@ -155,6 +181,7 @@ async function executeTool(
                 qsParts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(item))}`);
             }
         } else if (typeof v === "object") {
+            // JSON-encode objects as value
             qsParts.push(`${encodeURIComponent(k)}=${encodeURIComponent(JSON.stringify(v))}`);
         } else {
             qsParts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
@@ -162,20 +189,28 @@ async function executeTool(
     }
     if (qsParts.length) url += `?${qsParts.join("&")}`;
 
+    // ======================================================
+    // Build Request Options
+    // ======================================================
     const opts: RequestInit & { headers: Record<string, any> } = { method, headers };
-
+    // If content-type is form data, adjust accordingly (converter could mark)
     const contentType = headers["Content-Type"]?.toLowerCase() ?? "";
+
     if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && bodyPayload !== undefined) {
+        // If requestBody is already a FormData-like or flagged in x (converter support),
+        // caller could pass a special object { __formdata: true, entries: [...] } — support minimal
         if (bodyPayload && bodyPayload.__formdata === true && Array.isArray(bodyPayload.entries)) {
             const form = new FormData();
             for (const [k, v] of bodyPayload.entries) {
                 form.append(k, v);
             }
+            // Let fetch set Content-Type with boundary
             delete opts.headers["Content-Type"];
             opts.body = (form as any) as BodyInit;
         } else if (contentType.includes("application/x-www-form-urlencoded")) {
             opts.body = new URLSearchParams(bodyPayload).toString();
         } else {
+            // default JSON
             opts.body = JSON.stringify(bodyPayload);
         }
     }
@@ -196,13 +231,14 @@ async function executeTool(
         url,
         path,
         data,
-        headers: res.headers,
+        headers: res.headers, // keep for diagnostics
     };
 }
 
 // ======================================================
 // JSON-RPC Handler
-// (preserves function name handleMCPRequest)
+// - preserves handleMCPRequest name
+// - improved error reporting, robust content conversion, batch safety
 // ======================================================
 async function handleMCPRequest(
     request: JSONRPCRequest,
@@ -210,6 +246,7 @@ async function handleMCPRequest(
 ): Promise<JSONRPCResponse> {
     const { id, method, params, credentials } = request;
 
+    // helper to create consistent error responses with optional debug data
     const makeError = (code: number, message: string, data?: any) => ({
         jsonrpc: "2.0",
         id,
@@ -261,13 +298,17 @@ async function handleMCPRequest(
                 return makeError(-32601, `Tool '${toolName}' not found`) as JSONRPCResponse;
             }
 
+            // Converter MCP content yang valid
             function convertToMcpContent(data: any) {
+                // String → text
                 if (typeof data === "string") {
                     return {
                         type: "text",
                         text: data,
                     };
                 }
+
+                // Image (dengan __mcp_type)
                 if (data?.__mcp_type === "image" && data.base64) {
                     return {
                         type: "image",
@@ -275,6 +316,8 @@ async function handleMCPRequest(
                         mimeType: data.mimeType || "image/png",
                     };
                 }
+
+                // Audio
                 if (data?.__mcp_type === "audio" && data.base64) {
                     return {
                         type: "audio",
@@ -283,6 +326,7 @@ async function handleMCPRequest(
                     };
                 }
 
+                // Semua lainnya → text (untuk mencegah error Zod union)
                 return {
                     type: "text",
                     text: (() => {
@@ -294,6 +338,7 @@ async function handleMCPRequest(
                     })(),
                 };
             }
+
 
             try {
                 const baseUrl = credentials?.baseUrl;
@@ -316,6 +361,7 @@ async function handleMCPRequest(
                     },
                 };
             } catch (err: any) {
+                // return error with message and minimal debug info (avoid leaking secrets)
                 const debug = { message: err?.message, stack: err?.stack?.split("\n").slice(0, 5) };
 
                 return makeError(-32603, err?.message || "Internal error", debug) as JSONRPCResponse;
@@ -332,7 +378,9 @@ async function handleMCPRequest(
 
 // ======================================================
 // MCP TRIGGER NODE
-// (preserves class name OpenapiMcpServer)
+// - preserves class name OpenapiMcpServer
+// - avoids forcing refresh on every webhook call (uses cache by default)
+// - safer batch handling (Promise.allSettled) to return array of results
 // ======================================================
 export class OpenapiMcpServer implements INodeType {
     description: INodeTypeDescription = {
@@ -370,23 +418,13 @@ export class OpenapiMcpServer implements INodeType {
                 default: "",
                 placeholder: "https://example.com/openapi.json",
             },
-
-            // ======================================================
-            // ⬇⬇⬇ UPDATED: Default Filter sekarang multi-select (multiOptions)
-            // ======================================================
             {
-                displayName: 'Default Filter',
-                name: 'defaultFilter',
-                type: 'multiOptions', // <-- multi-select
-                typeOptions: {
-                    loadOptionsMethod: 'loadAvailableTags',
-                    refreshOnOpen: true,
-                },
-                default: [], // empty means no tag filtering (or 'All' in loader)
-                description: 'Filter berdasarkan tag dari OpenAPI (multi-select supported)',
+                displayName: "Default Filter",
+                name: "defaultFilter",
+                type: "string",
+                default: "",
+                placeholder: "mcp | tag",
             },
-            // ======================================================
-
             {
                 displayName: 'Available Tools (auto-refresh)',
                 name: 'toolList',
@@ -396,7 +434,7 @@ export class OpenapiMcpServer implements INodeType {
                     refreshOnOpen: true,
                 },
                 default: 'all',
-                description: 'Daftar tools yang berhasil dimuat dari OpenAPI (tergantung Default Filter)',
+                description: 'Daftar tools yang berhasil dimuat dari OpenAPI',
             },
         ],
     };
@@ -406,57 +444,16 @@ export class OpenapiMcpServer implements INodeType {
     // ==================================================
     methods = {
         loadOptions: {
-            // ========================================================
-            // ⬇⬇⬇ NEW: dropdown tag loader (unchanged)
-            // ========================================================
-            async loadAvailableTags(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-                const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
-
-                if (!openapiUrl) {
-                    return [{ name: "❌ No OpenAPI URL provided", value: "all" }];
-                }
-
-                try {
-                    const res = await fetch(openapiUrl);
-                    const json = await res.json();
-
-                    const tags: string[] =
-                        json?.tags?.map((t: any) => t.name) ??
-                        Object.values(json.paths || {})
-                            .flatMap((p: any) =>
-                                Object.values(p).flatMap((m: any) => m.tags || [])
-                            );
-
-                    const unique = Array.from(new Set(tags));
-
-                    // include an "All" option; users can still select none (empty array) which we'll treat as "all"
-                    return [
-                        { name: "All", value: "all" },
-                        ...unique.map((t) => ({
-                            name: t,
-                            value: t,
-                        })),
-                    ];
-                } catch (err) {
-                    console.error("Failed loading tags:", err);
-                    return [{ name: "All", value: "all" }];
-                }
-            },
-            // ========================================================
-
-            // ========================================================
-            // ⬇⬇⬇ UPDATED: refreshToolList now reads multi-select defaultFilter (string | string[])
-            // ========================================================
             async refreshToolList(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
                 const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
-                const filterTag = this.getNodeParameter("defaultFilter", 0) as string | string[]; // may be array
+                const filterTag = this.getNodeParameter("defaultFilter", 0) as string;
 
                 if (!openapiUrl) {
                     return [{ name: "❌ No OpenAPI URL provided", value: "" }];
                 }
 
-                // Pass the filterTag in its native shape to loadTools
-                const tools = await loadTools(openapiUrl, filterTag as any, true);
+                // force refresh when user opens selector explicitly
+                const tools = await loadTools(openapiUrl, filterTag, true);
 
                 return [
                     { name: "All Tools", value: "all" },
@@ -467,7 +464,6 @@ export class OpenapiMcpServer implements INodeType {
                     })),
                 ];
             },
-            // ========================================================
         },
     };
 
@@ -476,9 +472,10 @@ export class OpenapiMcpServer implements INodeType {
     // ==================================================
     async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
         const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
-        const filterTag = this.getNodeParameter("defaultFilter", 0) as string | string[]; // multi-select support
+        const filterTag = this.getNodeParameter("defaultFilter", 0) as string;
 
-        const tools = await loadTools(openapiUrl, filterTag as any, false);
+        // Use cached tools by default — non-blocking and faster
+        const tools = await loadTools(openapiUrl, filterTag, false);
 
         const creds = await this.getCredentials("openapiMcpServerCredentials") as {
             baseUrl: string;
@@ -491,12 +488,14 @@ export class OpenapiMcpServer implements INodeType {
 
         const body = this.getBodyData();
 
+        // Batch handling: use Promise.allSettled and return array of results
         if (Array.isArray(body)) {
             const promises = body.map((r) =>
                 handleMCPRequest({ ...r, credentials: creds }, tools)
             );
             const settled = await Promise.allSettled(promises);
 
+            // Normalize to either results or errors in MCP shape
             const responses = settled.map((s) => {
                 if (s.status === "fulfilled") return s.value;
                 return {
