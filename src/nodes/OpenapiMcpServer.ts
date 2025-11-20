@@ -476,7 +476,7 @@ export class OpenapiMcpServer implements INodeType {
                 typeOptions: {
                     loadOptionsMethod: 'loadTagsForFilter', // Metode baru untuk memuat tags
                     refreshOnOpen: true,
-                    multiSelect: true,
+                    multipleValues: true
                 },
             },
             {
