@@ -96,17 +96,19 @@ function createToolFromOperation(
 ): McpTool | null {
     try {
         const rawName = _.snakeCase(`${operation.operationId}` || `${method}_${path}`) || "unnamed_tool";
-        const name = cleanToolName(rawName);
+        const name = _.snakeCase(cleanToolName(operation.summary)) || cleanToolName(rawName);
 
         if (!name || name === "unnamed_tool") {
             console.warn(`Invalid tool name for ${method} ${path}`);
             return null;
         }
 
-        const description =
+        let description =
             operation.description ||
-            operation.summary ||
-            `Execute ${method.toUpperCase()} ${path}`;
+            operation.summary;
+
+        description += `\n
+        Execute ${method.toUpperCase()} ${path}`;
 
         // ✅ Extract schema berdasarkan method
         let schema;
