@@ -1,11 +1,5 @@
-// mcp_tool_convert.ts
 import _ from "lodash";
 
-/**
- * ============================
- *  Types
- * ============================
- */
 interface McpTool {
     name: string;
     description: string;
@@ -17,58 +11,52 @@ interface McpTool {
         tag?: string;
         deprecated?: boolean;
         summary?: string;
-        parameters?: any[];
     };
 }
 
 /**
- * ============================
- *  Public: convertOpenApiToMcpTools
- * ============================
- * Convert OpenAPI 3.x spec → MCP Tools
- * - filterTag : match against operation tags
+ * Convert OpenAPI 3.x JSON spec into MCP-compatible tool definitions.
  */
 export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string): McpTool[] {
     const tools: McpTool[] = [];
-
+    
     if (!openApiJson || typeof openApiJson !== "object") {
         console.warn("Invalid OpenAPI JSON");
         return tools;
     }
 
     const paths = openApiJson.paths || {};
+    
     if (Object.keys(paths).length === 0) {
         console.warn("No paths found in OpenAPI spec");
         return tools;
     }
 
-    for (const [path, methods] of Object.entries<any>(paths)) {
+    for (const [path, methods] of Object.entries(paths)) {
+        if (!path || typeof path !== "string") continue;
+
         if (!methods || typeof methods !== "object") continue;
 
         for (const [method, operation] of Object.entries<any>(methods)) {
-            const valid = ["get", "post", "put", "delete", "patch", "head", "options"];
-            if (!valid.includes(method.toLowerCase())) continue;
+            const validMethods = ["get", "post", "put", "delete", "patch", "head", "options"];
+            if (!validMethods.includes(method.toLowerCase())) continue;
 
             if (!operation || typeof operation !== "object") continue;
 
-            const tags = Array.isArray(operation.tags) ? operation.tags : [];
+            const tags: string[] = Array.isArray(operation.tags) ? operation.tags : [];
 
-            // Tag filter
-            if (
-                filterTag &&
-                (!tags.length ||
-                    !tags.some((t: string) =>
-                        t?.toLowerCase().includes(filterTag.toLowerCase())
-                    ))
-            ) {
-                continue;
-            }
+            if (!tags.length || !tags.some(t => 
+                typeof t === "string" && t.toLowerCase().includes(filterTag)
+            )) continue;
 
             try {
                 const tool = createToolFromOperation(path, method, operation, tags);
-                if (tool) tools.push(tool);
-            } catch (err) {
-                console.error(`Error building tool for ${method.toUpperCase()} ${path}`, err);
+                if (tool) {
+                    tools.push(tool);
+                }
+            } catch (error) {
+                console.error(`Error creating tool for ${method.toUpperCase()} ${path}:`, error);
+                continue;
             }
         }
     }
@@ -77,9 +65,7 @@ export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string): M
 }
 
 /**
- * ============================
- *  Build Tool from Operation
- * ============================
+ * Buat MCP tool dari operation OpenAPI
  */
 function createToolFromOperation(
     path: string,
@@ -87,275 +73,308 @@ function createToolFromOperation(
     operation: any,
     tags: string[]
 ): McpTool | null {
-    const rawName = _.snakeCase(operation.operationId || `${method}_${path}`) || "unnamed_tool";
-    const name = cleanToolName(rawName);
+    try {
+        const rawName = _.snakeCase(`${operation.operationId}` || `${method}_${path}`) || "unnamed_tool";
+        const name = cleanToolName(rawName);
 
-    if (name === "unnamed_tool") {
-        console.warn(`Invalid tool name: ${method} ${path}`);
+        if (!name || name === "unnamed_tool") {
+            console.warn(`Invalid tool name for ${method} ${path}`);
+            return null;
+        }
+
+        const description =
+            operation.description ||
+            operation.summary ||
+            `Execute ${method.toUpperCase()} ${path}`;
+
+        // ✅ Extract schema berdasarkan method
+        let schema;
+        if (method.toLowerCase() === "get") {
+            // ✅ Untuk GET, ambil dari parameters (query/path)
+            schema = extractParametersSchema(operation.parameters || []);
+        } else {
+            // ✅ Untuk POST/PUT/etc, ambil dari requestBody
+            schema = extractRequestBodySchema(operation);
+        }
+        
+        const inputSchema = createInputSchema(schema);
+
+        return {
+            name,
+            description,
+            "x-props": {
+                method: method.toUpperCase(),
+                path,
+                operationId: operation.operationId,
+                tag: tags[0],
+                deprecated: operation.deprecated || false,
+                summary: operation.summary,
+            },
+            inputSchema,
+        };
+    } catch (error) {
+        console.error(`Failed to create tool from operation:`, error);
         return null;
     }
-
-    const description =
-        operation.description ||
-        operation.summary ||
-        `Execute ${method.toUpperCase()} ${path}`;
-
-    // Build executor parameter array
-    const parameters: any[] = [];
-
-    if (Array.isArray(operation.parameters)) {
-        for (const p of operation.parameters) {
-            if (!p || typeof p !== "object") continue;
-
-            parameters.push({
-                name: p.name,
-                in: p.in,
-                required: !!p.required,
-                description: p.description,
-                schema: p.schema || { type: "string" },
-            });
-        }
-    }
-
-    // Synthetic requestBody param
-    if (operation.requestBody?.content) {
-        const schema = extractPreferredContentSchema(operation.requestBody.content);
-
-        parameters.push({
-            name: "body",
-            in: "requestBody",
-            required: !!operation.requestBody.required,
-            schema: schema || { type: "object" },
-            description: operation.requestBody.description || "Request body",
-        });
-    }
-
-    // Build input schema
-    let schema: any = null;
-
-    const lower = method.toLowerCase();
-    if (["get", "delete", "head"].includes(lower)) {
-        schema = extractParametersSchema(operation.parameters || []);
-    } else {
-        schema = extractRequestBodySchema(operation) ||
-                 extractParametersSchema(operation.parameters || []);
-    }
-
-    const inputSchema = createInputSchema(schema);
-
-    return {
-        name,
-        description,
-        "x-props": {
-            method: method.toUpperCase(),
-            path,
-            operationId: operation.operationId,
-            tag: tags[0],
-            deprecated: operation.deprecated || false,
-            summary: operation.summary,
-            parameters,
-        },
-        inputSchema,
-    };
 }
 
 /**
- * ============================
- *  Extract Preferred Content Schema
- * ============================
+ * Extract schema dari parameters (untuk GET requests)
  */
-function extractPreferredContentSchema(content: any): any {
-    if (!content) return null;
-
-    const preferred = [
-        "application/json",
-        "multipart/form-data",
-        "application/x-www-form-urlencoded",
-        "text/plain",
-    ];
-
-    for (const type of preferred) {
-        if (content[type]?.schema) return content[type].schema;
+function extractParametersSchema(parameters: any[]): any {
+    if (!Array.isArray(parameters) || parameters.length === 0) {
+        return null;
     }
-
-    const first = Object.values<any>(content)[0];
-    return first?.schema || null;
-}
-
-/**
- * ============================
- *  Extract Parameter Schema (GET/DELETE)
- * ============================
- */
-function extractParametersSchema(parameters: any[]): any | null {
-    if (!parameters.length) return null;
 
     const properties: any = {};
     const required: string[] = [];
 
     for (const param of parameters) {
-        if (!["path", "query", "header"].includes(param.in)) continue;
+        if (!param || typeof param !== "object") continue;
 
-        const name = param.name;
-        if (!name) continue;
+        // ✅ Support path, query, dan header parameters
+        if (["path", "query", "header"].includes(param.in)) {
+            const paramName = param.name;
+            if (!paramName || typeof paramName !== "string") continue;
 
-        const schema = param.schema || { type: "string" };
+            properties[paramName] = {
+                type: param.schema?.type || "string",
+                description: param.description || `${param.in} parameter: ${paramName}`,
+            };
 
-        properties[name] = {
-            type: schema.type || "string",
-            description: param.description || `${param.in} parameter: ${name}`,
-            ...extractSchemaDetails(schema),
-        };
+            // ✅ Copy field tambahan dari schema
+            if (param.schema) {
+                const allowedFields = ["examples", "example", "default", "enum", "pattern", "minLength", "maxLength", "minimum", "maximum", "format"];
+                for (const field of allowedFields) {
+                    if (param.schema[field] !== undefined) {
+                        properties[paramName][field] = param.schema[field];
+                    }
+                }
+            }
 
-        if (param.required) required.push(name);
-    }
-
-    if (!Object.keys(properties).length) return null;
-
-    return { type: "object", properties, required };
-}
-
-/**
- * ============================
- *  Extract RequestBody Schema
- * ============================
- */
-function extractRequestBodySchema(operation: any): any | null {
-    return extractPreferredContentSchema(operation?.requestBody?.content);
-}
-
-/**
- * ============================
- *  Create MCP Input Schema
- * ============================
- */
-function createInputSchema(schema: any): any {
-    if (!schema || typeof schema !== "object") {
-        return { type: "object", properties: {}, additionalProperties: false };
-    }
-
-    const properties: any = {};
-    const required: string[] = Array.isArray(schema.required) ? [...schema.required] : [];
-
-    if (schema.properties) {
-        for (const [key, prop] of Object.entries<any>(schema.properties)) {
-            const cleaned = cleanProperty(prop);
-            if (cleaned) properties[key] = cleaned;
+            if (param.required === true) {
+                required.push(paramName);
+            }
         }
     }
 
-    if (schema.type === "array" && schema.items) {
-        properties.items = cleanProperty(schema.items) || { type: "string" };
+    if (Object.keys(properties).length === 0) {
+        return null;
     }
 
     return {
         type: "object",
         properties,
         required,
-        additionalProperties: false,
     };
 }
 
 /**
- * ============================
- *  Clean Individual Schema Property
- * ============================
+ * Extract schema dari requestBody (untuk POST/PUT/etc requests)
  */
-function cleanProperty(prop: any): any | null {
-    if (!prop || typeof prop !== "object") return { type: "string" };
-
-    const out: any = { type: prop.type || "string" };
-
-    Object.assign(out, extractSchemaDetails(prop));
-
-    if (prop.properties) {
-        out.properties = {};
-        for (const [k, v] of Object.entries<any>(prop.properties)) {
-            const cleaned = cleanProperty(v);
-            if (cleaned) out.properties[k] = cleaned;
-        }
-
-        if (Array.isArray(prop.required)) {
-            out.required = prop.required.filter((r: any) => typeof r === "string");
-        }
+function extractRequestBodySchema(operation: any): any {
+    if (!operation.requestBody?.content) {
+        return null;
     }
 
-    if (prop.items) {
-        out.items = cleanProperty(prop.items);
-    }
+    const content = operation.requestBody.content;
 
-    if (Array.isArray(prop.oneOf)) out.oneOf = prop.oneOf.map(cleanProperty);
-    if (Array.isArray(prop.anyOf)) out.anyOf = prop.anyOf.map(cleanProperty);
-    if (Array.isArray(prop.allOf)) out.allOf = prop.allOf.map(cleanProperty);
-
-    return out;
-}
-
-/**
- * ============================
- *  Extract Allowed Schema Fields
- * ============================
- */
-function extractSchemaDetails(schema: any) {
-    const allowed = [
-        "description",
-        "examples",
-        "example",
-        "default",
-        "enum",
-        "pattern",
-        "minLength",
-        "maxLength",
-        "minimum",
-        "maximum",
-        "format",
-        "multipleOf",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
+    const contentTypes = [
+        "application/json",
+        "multipart/form-data",
+        "application/x-www-form-urlencoded",
+        "text/plain",
     ];
 
-    const out: any = {};
-    for (const f of allowed) {
-        if (schema[f] !== undefined) out[f] = schema[f];
+    for (const contentType of contentTypes) {
+        if (content[contentType]?.schema) {
+            return content[contentType].schema;
+        }
     }
-    return out;
+
+    for (const [_, value] of Object.entries<any>(content)) {
+        if (value?.schema) {
+            return value.schema;
+        }
+    }
+
+    return null;
 }
 
 /**
- * ============================
- *  Clean tool name safely
- * ============================
+ * Buat input schema yang valid untuk MCP
  */
-function cleanToolName(value: string): string {
-    if (!value) return "unnamed_tool";
+function createInputSchema(schema: any): any {
+    const defaultSchema = {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+    };
 
-    return value
-        .replace(/[{}]/g, "")
-        .replace(/[^a-zA-Z0-9_]/g, "_")
-        .replace(/_+/g, "_")
-        .replace(/^_|_$/g, "")
-        .toLowerCase() || "unnamed_tool";
+    if (!schema || typeof schema !== "object") {
+        return defaultSchema;
+    }
+
+    try {
+        const properties: any = {};
+        const required: string[] = [];
+        const originalRequired = Array.isArray(schema.required) ? schema.required : [];
+
+        if (schema.properties && typeof schema.properties === "object") {
+            for (const [key, prop] of Object.entries<any>(schema.properties)) {
+                if (!key || typeof key !== "string") continue;
+
+                try {
+                    const cleanProp = cleanProperty(prop);
+                    if (cleanProp) {
+                        properties[key] = cleanProp;
+
+                        // ✅ PERBAIKAN: Check optional flag dengan benar
+                        const isOptional = prop?.optional === true || prop?.optional === "true";
+                        const isInRequired = originalRequired.includes(key);
+                        
+                        // ✅ Hanya masukkan ke required jika memang required DAN bukan optional
+                        if (isInRequired && !isOptional) {
+                            required.push(key);
+                        }
+                    }
+                } catch (error) {
+                    console.error(`Error cleaning property ${key}:`, error);
+                    continue;
+                }
+            }
+        }
+
+        return {
+            type: "object",
+            properties,
+            required,
+            additionalProperties: false,
+        };
+    } catch (error) {
+        console.error("Error creating input schema:", error);
+        return defaultSchema;
+    }
 }
 
 /**
- * ============================
- *  Public: getMcpTools
- * ============================
+ * Bersihkan property dari field custom
+ */
+function cleanProperty(prop: any): any | null {
+    if (!prop || typeof prop !== "object") {
+        return { type: "string" };
+    }
+
+    try {
+        const cleaned: any = {
+            type: prop.type || "string",
+        };
+
+        const allowedFields = [
+            "description",
+            "examples",
+            "example",
+            "default",
+            "enum",
+            "pattern",
+            "minLength",
+            "maxLength",
+            "minimum",
+            "maximum",
+            "format",
+            "multipleOf",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+        ];
+
+        for (const field of allowedFields) {
+            if (prop[field] !== undefined && prop[field] !== null) {
+                cleaned[field] = prop[field];
+            }
+        }
+
+        if (prop.properties && typeof prop.properties === "object") {
+            cleaned.properties = {};
+            for (const [key, value] of Object.entries(prop.properties)) {
+                const cleanedNested = cleanProperty(value);
+                if (cleanedNested) {
+                    cleaned.properties[key] = cleanedNested;
+                }
+            }
+            
+            if (Array.isArray(prop.required)) {
+                cleaned.required = prop.required.filter((r: any) => typeof r === "string");
+            }
+        }
+
+        if (prop.items) {
+            cleaned.items = cleanProperty(prop.items);
+        }
+
+        if (Array.isArray(prop.oneOf)) {
+            cleaned.oneOf = prop.oneOf.map(cleanProperty).filter(Boolean);
+        }
+        if (Array.isArray(prop.anyOf)) {
+            cleaned.anyOf = prop.anyOf.map(cleanProperty).filter(Boolean);
+        }
+        if (Array.isArray(prop.allOf)) {
+            cleaned.allOf = prop.allOf.map(cleanProperty).filter(Boolean);
+        }
+
+        return cleaned;
+    } catch (error) {
+        console.error("Error cleaning property:", error);
+        return null;
+    }
+}
+
+/**
+ * Bersihkan nama tool
+ */
+function cleanToolName(name: string): string {
+    if (!name || typeof name !== "string") {
+        return "unnamed_tool";
+    }
+
+    try {
+        return name
+            .replace(/[{}]/g, "")
+            .replace(/[^a-zA-Z0-9_]/g, "_")
+            .replace(/_+/g, "_")
+            .replace(/^_|_$/g, "")
+            // ❗️ METHOD PREFIX TIDAK DIHAPUS LAGI (agar tidak duplicate)
+            .toLowerCase()
+            || "unnamed_tool";
+    } catch (error) {
+        console.error("Error cleaning tool name:", error);
+        return "unnamed_tool";
+    }
+}
+
+
+/**
+ * Ambil OpenAPI JSON dari endpoint dan konversi ke tools MCP
  */
 export async function getMcpTools(url: string, filterTag: string): Promise<McpTool[]> {
     try {
-        console.log(`Fetching OpenAPI spec: ${url}`);
+        
+        console.log(`Fetching OpenAPI spec from: ${url}`);
 
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
-        const json = await res.json();
-        const tools = convertOpenApiToMcpTools(json, filterTag);
-
-        console.log(`Generated ${tools.length} MCP tools`);
+        const openApiJson = await response.json();
+        const tools = convertOpenApiToMcpTools(openApiJson, filterTag);
+        
+        console.log(`✅ Successfully generated ${tools.length} MCP tools`);
+        
         return tools;
-    } catch (err) {
-        console.error("Error fetching MCP Tools:", err);
-        throw err;
+    } catch (error) {
+        console.error("Error fetching MCP tools:", error);
+        throw error;
     }
 }
+
