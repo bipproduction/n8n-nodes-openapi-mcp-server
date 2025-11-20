@@ -7,6 +7,7 @@ import {
     ILoadOptionsFunctions,
     INodePropertyOptions,
 } from 'n8n-workflow';
+// Asumsi getMcpTools sekarang menerima string | string[]
 import { getMcpTools } from "../lib/mcp_tool_convert";
 
 // ======================================================
@@ -21,8 +22,10 @@ const toolsCache = new Map<string, CachedTools>();
 // - preserves function name loadTools (do not rename)
 // - adds TTL, forceRefresh handling, and robust error handling
 // ======================================================
-async function loadTools(openapiUrl: string, filterTag: string, forceRefresh = false): Promise<any[]> {
-    const cacheKey = `${openapiUrl}::${filterTag || ""}`;
+async function loadTools(openapiUrl: string, filterTag: string | string[], forceRefresh = false): Promise<any[]> {
+    // Gunakan JSON.stringify untuk membuat cacheKey yang stabil dari array
+    const filterKey = Array.isArray(filterTag) ? filterTag.slice().sort().join(":") : (filterTag || "all");
+    const cacheKey = `${openapiUrl}::${filterKey}`;
 
     try {
         const cached = toolsCache.get(cacheKey);
@@ -30,8 +33,12 @@ async function loadTools(openapiUrl: string, filterTag: string, forceRefresh = f
             return cached.tools;
         }
 
-        console.log(`[MCP] 🔄 Refreshing tools from ${openapiUrl} ...`);
-        const fetched = await getMcpTools(openapiUrl, filterTag);
+        console.log(`[MCP] 🔄 Refreshing tools from ${openapiUrl} with filters: ${filterKey}...`);
+        
+        // Cek jika filternya adalah 'all', kirim array kosong atau 'all' ke converter
+        const tagsToFilter = (filterKey === "all" || filterKey === "") ? [] : filterTag;
+        
+        const fetched = await getMcpTools(openapiUrl, tagsToFilter);
 
         console.log(`[MCP] ✅ Loaded ${fetched.length} tools`);
         if (fetched.length > 0) {
@@ -377,6 +384,44 @@ async function handleMCPRequest(
 }
 
 // ======================================================
+// Helper untuk mengambil semua tags unik dari OpenAPI
+// ======================================================
+async function fetchAllTags(openapiUrl: string): Promise<string[]> {
+    if (!openapiUrl) return [];
+
+    try {
+        const response = await fetch(openapiUrl);
+        if (!response.ok) {
+            console.warn(`Failed to fetch OpenAPI spec for tags: ${response.status}`);
+            return [];
+        }
+
+        const openApiJson = await response.json();
+        const paths = openApiJson.paths || {};
+        const tags = new Set<string>();
+
+        for (const methods of Object.values(paths)) {
+            if (typeof methods !== "object" || methods === null) continue;
+
+            for (const operation of Object.values<any>(methods)) {
+                if (Array.isArray(operation.tags)) {
+                    operation.tags.forEach((tag: any) => {
+                        if (typeof tag === "string" && tag.trim()) {
+                            tags.add(tag.trim());
+                        }
+                    });
+                }
+            }
+        }
+        return Array.from(tags).sort();
+    } catch (err) {
+        console.error(`Error fetching or parsing tags from ${openapiUrl}:`, err);
+        return [];
+    }
+}
+
+
+// ======================================================
 // MCP TRIGGER NODE
 // - preserves class name OpenapiMcpServer
 // - avoids forcing refresh on every webhook call (uses cache by default)
@@ -418,12 +463,21 @@ export class OpenapiMcpServer implements INodeType {
                 default: "",
                 placeholder: "https://example.com/openapi.json",
             },
+            // ✅ PERUBAHAN: Default Filter diubah menjadi multiSelect
             {
-                displayName: "Default Filter",
+                displayName: "Default Filters (Tags)",
                 name: "defaultFilter",
-                type: "string",
-                default: "",
-                placeholder: "mcp | tag",
+                type: "options", // Diubah dari 'string' ke 'multiSelect'
+                default: ["all"],     // Nilai default diubah menjadi array dengan 'all'
+                description: 'Pilih tag/kategori tool yang ingin di-expose. Default: All.',
+                options: [
+                    // Opsi ini akan diisi secara dinamis oleh loadOptions
+                ],
+                typeOptions: {
+                    loadOptionsMethod: 'loadTagsForFilter', // Metode baru untuk memuat tags
+                    refreshOnOpen: true,
+                    multiSelect: true,
+                },
             },
             {
                 displayName: 'Available Tools (auto-refresh)',
@@ -444,16 +498,42 @@ export class OpenapiMcpServer implements INodeType {
     // ==================================================
     methods = {
         loadOptions: {
+            // ✅ METODE BARU: Memuat daftar tags yang tersedia
+            async loadTagsForFilter(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+                const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
+
+                if (!openapiUrl) {
+                    return [{ name: "❌ No OpenAPI URL provided", value: "all" }];
+                }
+
+                const tags = await fetchAllTags(openapiUrl);
+                
+                return [
+                    { name: "All Tools (default)", value: "all" },
+                    ...tags.map((tag) => ({
+                        name: tag,
+                        value: tag,
+                        description: `Filter tools by tag: ${tag}`,
+                    })),
+                ];
+            },
+
             async refreshToolList(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
                 const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
-                const filterTag = this.getNodeParameter("defaultFilter", 0) as string;
+                // ✅ Ambil nilai sebagai array (multiSelect)
+                const filterTags = this.getNodeParameter("defaultFilter", 0) as string[];
 
                 if (!openapiUrl) {
                     return [{ name: "❌ No OpenAPI URL provided", value: "" }];
                 }
-
+                
+                // Jika "all" dipilih (atau tidak ada filter), kirim "all"
+                const filterValue = (filterTags.includes("all") || filterTags.length === 0) 
+                    ? "all" 
+                    : filterTags;
+                
                 // force refresh when user opens selector explicitly
-                const tools = await loadTools(openapiUrl, filterTag, true);
+                const tools = await loadTools(openapiUrl, filterValue, true);
 
                 return [
                     { name: "All Tools", value: "all" },
@@ -472,10 +552,16 @@ export class OpenapiMcpServer implements INodeType {
     // ==================================================
     async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
         const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
-        const filterTag = this.getNodeParameter("defaultFilter", 0) as string;
+        // ✅ Ambil nilai sebagai array (multiSelect)
+        const filterTags = this.getNodeParameter("defaultFilter", 0) as string[];
 
+        // Jika "all" dipilih (atau tidak ada filter), kirim "all"
+        const filterValue = (filterTags.includes("all") || filterTags.length === 0) 
+            ? "all" 
+            : filterTags;
+            
         // Use cached tools by default — non-blocking and faster
-        const tools = await loadTools(openapiUrl, filterTag, false);
+        const tools = await loadTools(openapiUrl, filterValue, false);
 
         const creds = await this.getCredentials("openapiMcpServerCredentials") as {
             baseUrl: string;

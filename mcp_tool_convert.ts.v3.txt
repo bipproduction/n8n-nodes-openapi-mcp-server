@@ -16,25 +16,13 @@ interface McpTool {
 
 /**
  * Convert OpenAPI 3.x JSON spec into MCP-compatible tool definitions.
- * * @param openApiJson OpenAPI JSON specification object.
- * @param filterTag A string or array of strings. Operations must match at least one tag 
- * (case-insensitive partial match).
  */
-export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string | string[]): McpTool[] {
+export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string): McpTool[] {
     const tools: McpTool[] = [];
     
     if (!openApiJson || typeof openApiJson !== "object") {
         console.warn("Invalid OpenAPI JSON");
         return tools;
-    }
-
-    // Cast filterTag to an array and normalize to lowercase for comparison
-    const filterTags = _.castArray(filterTag)
-                        .filter(t => typeof t === "string" && t.trim() !== "")
-                        .map(t => t.toLowerCase());
-
-    if (filterTags.length === 0) {
-        console.warn("Filter tag is empty or invalid. Returning all tools with tags.");
     }
 
     const paths = openApiJson.paths || {};
@@ -56,19 +44,10 @@ export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string | s
             if (!operation || typeof operation !== "object") continue;
 
             const tags: string[] = Array.isArray(operation.tags) ? operation.tags : [];
-            const lowerCaseTags = tags.map(t => typeof t === "string" ? t.toLowerCase() : "");
 
-            // ✅ MODIFIKASI: Pengecekan filterTags
-            if (filterTags.length > 0) {
-                const isTagMatch = lowerCaseTags.some(opTag =>
-                    filterTags.some(fTag => opTag.includes(fTag))
-                );
-                
-                if (!isTagMatch) continue;
-            } else if (tags.length === 0) {
-                // Jika tidak ada filter, hanya proses operation yang memiliki tags
-                continue;
-            }
+            if (!tags.length || !tags.some(t => 
+                typeof t === "string" && t.toLowerCase().includes(filterTag)
+            )) continue;
 
             try {
                 const tool = createToolFromOperation(path, method, operation, tags);
@@ -375,11 +354,8 @@ function cleanToolName(name: string): string {
 
 /**
  * Ambil OpenAPI JSON dari endpoint dan konversi ke tools MCP
- * * @param url URL of the OpenAPI spec.
- * @param filterTag A string or array of strings. Operations must match at least one tag 
- * (case-insensitive partial match).
  */
-export async function getMcpTools(url: string, filterTag: string | string[]): Promise<McpTool[]> {
+export async function getMcpTools(url: string, filterTag: string): Promise<McpTool[]> {
     try {
         
         console.log(`Fetching OpenAPI spec from: ${url}`);
@@ -393,8 +369,7 @@ export async function getMcpTools(url: string, filterTag: string | string[]): Pr
         const openApiJson = await response.json();
         const tools = convertOpenApiToMcpTools(openApiJson, filterTag);
         
-        const filterStr = _.castArray(filterTag).join(", ");
-        console.log(`✅ Successfully generated ${tools.length} MCP tools for tags: [${filterStr}]`);
+        console.log(`✅ Successfully generated ${tools.length} MCP tools`);
         
         return tools;
     } catch (error) {
@@ -402,3 +377,4 @@ export async function getMcpTools(url: string, filterTag: string | string[]): Pr
         throw error;
     }
 }
+
