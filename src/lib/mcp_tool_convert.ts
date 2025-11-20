@@ -2,14 +2,10 @@
 import _ from "lodash";
 
 /**
- * This file:
- *  - preserves exported function names: convertOpenApiToMcpTools and getMcpTools
- *  - improves resilience when parsing OpenAPI objects
- *  - emits x-props.parameters array so executeTool can act correctly
- *  - ensures requestBody is represented as a synthetic `body` parameter when necessary
+ * ============================
+ *  Types
+ * ============================
  */
-
-// == Types
 interface McpTool {
     name: string;
     description: string;
@@ -21,13 +17,16 @@ interface McpTool {
         tag?: string;
         deprecated?: boolean;
         summary?: string;
-        parameters?: any[]; // added to communicate param locations to executor
+        parameters?: any[];
     };
 }
 
 /**
- * Convert OpenAPI 3.x JSON spec into MCP-compatible tool definitions.
- * - filterTag is matched case-insensitively against operation tags (substring)
+ * ============================
+ *  Public: convertOpenApiToMcpTools
+ * ============================
+ * Convert OpenAPI 3.x spec → MCP Tools
+ * - filterTag : match against operation tags
  */
 export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string): McpTool[] {
     const tools: McpTool[] = [];
@@ -38,36 +37,38 @@ export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string): M
     }
 
     const paths = openApiJson.paths || {};
-
     if (Object.keys(paths).length === 0) {
         console.warn("No paths found in OpenAPI spec");
         return tools;
     }
 
-    for (const [path, methods] of Object.entries(paths)) {
-        if (!path || typeof path !== "string") continue;
+    for (const [path, methods] of Object.entries<any>(paths)) {
         if (!methods || typeof methods !== "object") continue;
 
         for (const [method, operation] of Object.entries<any>(methods)) {
-            const validMethods = ["get", "post", "put", "delete", "patch", "head", "options"];
-            if (!validMethods.includes(method.toLowerCase())) continue;
+            const valid = ["get", "post", "put", "delete", "patch", "head", "options"];
+            if (!valid.includes(method.toLowerCase())) continue;
+
             if (!operation || typeof operation !== "object") continue;
 
-            const tags: string[] = Array.isArray(operation.tags) ? operation.tags : [];
+            const tags = Array.isArray(operation.tags) ? operation.tags : [];
 
-            // If filterTag provided, require at least one tag to include it (case-insensitive)
-            if (filterTag && (!tags.length || !tags.some(t => typeof t === "string" && t.toLowerCase().includes(filterTag.toLowerCase())))) {
+            // Tag filter
+            if (
+                filterTag &&
+                (!tags.length ||
+                    !tags.some((t: string) =>
+                        t?.toLowerCase().includes(filterTag.toLowerCase())
+                    ))
+            ) {
                 continue;
             }
 
             try {
                 const tool = createToolFromOperation(path, method, operation, tags);
-                if (tool) {
-                    tools.push(tool);
-                }
-            } catch (error) {
-                console.error(`Error creating tool for ${method.toUpperCase()} ${path}:`, error);
-                continue;
+                if (tool) tools.push(tool);
+            } catch (err) {
+                console.error(`Error building tool for ${method.toUpperCase()} ${path}`, err);
             }
         }
     }
@@ -76,8 +77,9 @@ export function convertOpenApiToMcpTools(openApiJson: any, filterTag: string): M
 }
 
 /**
- * Create MCP tool from an OpenAPI operation.
- * - Ensures x-props.parameters exists and describes path/query/header/cookie/requestBody
+ * ============================
+ *  Build Tool from Operation
+ * ============================
  */
 function createToolFromOperation(
     path: string,
@@ -85,367 +87,275 @@ function createToolFromOperation(
     operation: any,
     tags: string[]
 ): McpTool | null {
-    try {
-        const rawName = _.snakeCase(`${operation.operationId}` || `${method}_${path}`) || "unnamed_tool";
-        const name = cleanToolName(rawName);
+    const rawName = _.snakeCase(operation.operationId || `${method}_${path}`) || "unnamed_tool";
+    const name = cleanToolName(rawName);
 
-        if (!name || name === "unnamed_tool") {
-            console.warn(`Invalid tool name for ${method} ${path}`);
-            return null;
-        }
+    if (name === "unnamed_tool") {
+        console.warn(`Invalid tool name: ${method} ${path}`);
+        return null;
+    }
 
-        const description =
-            operation.description ||
-            operation.summary ||
-            `Execute ${method.toUpperCase()} ${path}`;
+    const description =
+        operation.description ||
+        operation.summary ||
+        `Execute ${method.toUpperCase()} ${path}`;
 
-        // Build parameters array for executor
-        const parameters: any[] = [];
+    // Build executor parameter array
+    const parameters: any[] = [];
 
-        if (Array.isArray(operation.parameters)) {
-            for (const p of operation.parameters) {
-                try {
-                    // copy essential fields
-                    const paramEntry: any = {
-                        name: p.name,
-                        in: p.in,
-                        required: !!p.required,
-                        description: p.description,
-                        schema: p.schema || { type: "string" },
-                    };
-                    parameters.push(paramEntry);
-                } catch (err) {
-                    console.warn("Skipping invalid parameter:", p, err);
-                }
-            }
-        }
+    if (Array.isArray(operation.parameters)) {
+        for (const p of operation.parameters) {
+            if (!p || typeof p !== "object") continue;
 
-        // If requestBody exists, synthesize a single `body` parameter so the executor can pick it up.
-        // We do not try to expand complex requestBody schemas into multiple parameters here — inputSchema covers that.
-        if (operation.requestBody && typeof operation.requestBody === "object") {
-            // prefer application/json schema, fallback to first available
-            const content = operation.requestBody.content || {};
-            let schemaCandidate: any = null;
-            const preferred = ["application/json", "multipart/form-data", "application/x-www-form-urlencoded"];
-            for (const c of preferred) {
-                if (content[c]?.schema) {
-                    schemaCandidate = content[c].schema;
-                    break;
-                }
-            }
-            if (!schemaCandidate) {
-                const entries = Object.entries(content);
-                if (entries.length > 0 && (entries[0] as any)[1]?.schema) {
-                    schemaCandidate = (entries[0] as any)[1].schema;
-                }
-            }
-
-            // Add synthetic body param (name "body")
             parameters.push({
-                name: "body",
-                in: "requestBody",
-                required: !!operation.requestBody.required,
-                schema: schemaCandidate || { type: "object" },
-                description: operation.requestBody.description || "Request body",
+                name: p.name,
+                in: p.in,
+                required: !!p.required,
+                description: p.description,
+                schema: p.schema || { type: "string" },
             });
         }
-
-        // Extract input schema for UI (query/path/header -> properties OR requestBody schema)
-        let schema;
-        if (method.toLowerCase() === "get" || method.toLowerCase() === "delete" || method.toLowerCase() === "head") {
-            schema = extractParametersSchema(operation.parameters || []);
-        } else {
-            schema = extractRequestBodySchema(operation);
-            // if no requestBody but parameters exist, fall back to parameters schema
-            if (!schema) {
-                schema = extractParametersSchema(operation.parameters || []);
-            }
-        }
-
-        const inputSchema = createInputSchema(schema);
-
-        return {
-            name,
-            description,
-            "x-props": {
-                method: method.toUpperCase(),
-                path,
-                operationId: operation.operationId,
-                tag: tags[0],
-                deprecated: operation.deprecated || false,
-                summary: operation.summary,
-                parameters, // executor will rely on this
-            },
-            inputSchema,
-        };
-    } catch (error) {
-        console.error(`Failed to create tool from operation:`, error);
-        return null;
-    }
-}
-
-/**
- * Extract schema dari parameters (untuk GET/DELETE requests)
- * - returns null if no parameters
- */
-function extractParametersSchema(parameters: any[]): any | null {
-    if (!Array.isArray(parameters) || parameters.length === 0) {
-        return null;
     }
 
-    const properties: any = {};
-    const required: string[] = [];
+    // Synthetic requestBody param
+    if (operation.requestBody?.content) {
+        const schema = extractPreferredContentSchema(operation.requestBody.content);
 
-    for (const param of parameters) {
-        if (!param || typeof param !== "object") continue;
-
-        // Support path, query, dan header parameters
-        if (["path", "query", "header"].includes(param.in)) {
-            const paramName = param.name;
-            if (!paramName || typeof paramName !== "string") continue;
-
-            properties[paramName] = {
-                type: param.schema?.type || "string",
-                description: param.description || `${param.in} parameter: ${paramName}`,
-            };
-
-            // copy allowed fields
-            if (param.schema) {
-                const allowedFields = ["examples", "example", "default", "enum", "pattern", "minLength", "maxLength", "minimum", "maximum", "format"];
-                for (const field of allowedFields) {
-                    if (param.schema[field] !== undefined) {
-                        properties[paramName][field] = param.schema[field];
-                    }
-                }
-            }
-
-            if (param.required === true) {
-                required.push(paramName);
-            }
-        }
+        parameters.push({
+            name: "body",
+            in: "requestBody",
+            required: !!operation.requestBody.required,
+            schema: schema || { type: "object" },
+            description: operation.requestBody.description || "Request body",
+        });
     }
 
-    if (Object.keys(properties).length === 0) {
-        return null;
+    // Build input schema
+    let schema: any = null;
+
+    const lower = method.toLowerCase();
+    if (["get", "delete", "head"].includes(lower)) {
+        schema = extractParametersSchema(operation.parameters || []);
+    } else {
+        schema = extractRequestBodySchema(operation) ||
+                 extractParametersSchema(operation.parameters || []);
     }
+
+    const inputSchema = createInputSchema(schema);
 
     return {
-        type: "object",
-        properties,
-        required,
+        name,
+        description,
+        "x-props": {
+            method: method.toUpperCase(),
+            path,
+            operationId: operation.operationId,
+            tag: tags[0],
+            deprecated: operation.deprecated || false,
+            summary: operation.summary,
+            parameters,
+        },
+        inputSchema,
     };
 }
 
 /**
- * Extract schema dari requestBody (untuk POST/PUT/etc requests)
- * - prefers application/json, handles form-data, urlencoded fallbacks
+ * ============================
+ *  Extract Preferred Content Schema
+ * ============================
  */
-function extractRequestBodySchema(operation: any): any | null {
-    if (!operation.requestBody?.content) {
-        return null;
-    }
+function extractPreferredContentSchema(content: any): any {
+    if (!content) return null;
 
-    const content = operation.requestBody.content;
-
-    const contentTypes = [
+    const preferred = [
         "application/json",
         "multipart/form-data",
         "application/x-www-form-urlencoded",
         "text/plain",
     ];
 
-    for (const contentType of contentTypes) {
-        if (content[contentType]?.schema) {
-            return content[contentType].schema;
-        }
+    for (const type of preferred) {
+        if (content[type]?.schema) return content[type].schema;
     }
 
-    for (const [_, value] of Object.entries<any>(content)) {
-        if (value?.schema) {
-            return value.schema;
-        }
-    }
-
-    return null;
+    const first = Object.values<any>(content)[0];
+    return first?.schema || null;
 }
 
 /**
- * Buat input schema yang valid untuk MCP
- * - preserves optional flags, required semantics, and nested properties
+ * ============================
+ *  Extract Parameter Schema (GET/DELETE)
+ * ============================
+ */
+function extractParametersSchema(parameters: any[]): any | null {
+    if (!parameters.length) return null;
+
+    const properties: any = {};
+    const required: string[] = [];
+
+    for (const param of parameters) {
+        if (!["path", "query", "header"].includes(param.in)) continue;
+
+        const name = param.name;
+        if (!name) continue;
+
+        const schema = param.schema || { type: "string" };
+
+        properties[name] = {
+            type: schema.type || "string",
+            description: param.description || `${param.in} parameter: ${name}`,
+            ...extractSchemaDetails(schema),
+        };
+
+        if (param.required) required.push(name);
+    }
+
+    if (!Object.keys(properties).length) return null;
+
+    return { type: "object", properties, required };
+}
+
+/**
+ * ============================
+ *  Extract RequestBody Schema
+ * ============================
+ */
+function extractRequestBodySchema(operation: any): any | null {
+    return extractPreferredContentSchema(operation?.requestBody?.content);
+}
+
+/**
+ * ============================
+ *  Create MCP Input Schema
+ * ============================
  */
 function createInputSchema(schema: any): any {
-    const defaultSchema = {
+    if (!schema || typeof schema !== "object") {
+        return { type: "object", properties: {}, additionalProperties: false };
+    }
+
+    const properties: any = {};
+    const required: string[] = Array.isArray(schema.required) ? [...schema.required] : [];
+
+    if (schema.properties) {
+        for (const [key, prop] of Object.entries<any>(schema.properties)) {
+            const cleaned = cleanProperty(prop);
+            if (cleaned) properties[key] = cleaned;
+        }
+    }
+
+    if (schema.type === "array" && schema.items) {
+        properties.items = cleanProperty(schema.items) || { type: "string" };
+    }
+
+    return {
         type: "object",
-        properties: {},
+        properties,
+        required,
         additionalProperties: false,
     };
-
-    if (!schema || typeof schema !== "object") {
-        return defaultSchema;
-    }
-
-    try {
-        const properties: any = {};
-        const required: string[] = [];
-        const originalRequired = Array.isArray(schema.required) ? schema.required : [];
-
-        if (schema.properties && typeof schema.properties === "object") {
-            for (const [key, prop] of Object.entries<any>(schema.properties)) {
-                if (!key || typeof key !== "string") continue;
-
-                try {
-                    const cleanProp = cleanProperty(prop);
-                    if (cleanProp) {
-                        properties[key] = cleanProp;
-
-                        // Check optional flag properly
-                        const isOptional = prop?.optional === true || prop?.optional === "true";
-                        const isInRequired = originalRequired.includes(key);
-
-                        if (isInRequired && !isOptional) {
-                            required.push(key);
-                        }
-                    }
-                } catch (error) {
-                    console.error(`Error cleaning property ${key}:`, error);
-                    continue;
-                }
-            }
-        } else if (schema.type === "array" && schema.items) {
-            // represent top-level array as object with items property to keep inputSchema shape predictable
-            properties["items"] = cleanProperty(schema.items) || { type: "string" };
-        }
-
-        return {
-            type: "object",
-            properties,
-            required,
-            additionalProperties: false,
-        };
-    } catch (error) {
-        console.error("Error creating input schema:", error);
-        return defaultSchema;
-    }
 }
 
 /**
- * Bersihkan property dari field custom
- * - preserves nested structures, arrays, and combiners (oneOf/anyOf/allOf)
+ * ============================
+ *  Clean Individual Schema Property
+ * ============================
  */
 function cleanProperty(prop: any): any | null {
-    if (!prop || typeof prop !== "object") {
-        return { type: "string" };
+    if (!prop || typeof prop !== "object") return { type: "string" };
+
+    const out: any = { type: prop.type || "string" };
+
+    Object.assign(out, extractSchemaDetails(prop));
+
+    if (prop.properties) {
+        out.properties = {};
+        for (const [k, v] of Object.entries<any>(prop.properties)) {
+            const cleaned = cleanProperty(v);
+            if (cleaned) out.properties[k] = cleaned;
+        }
+
+        if (Array.isArray(prop.required)) {
+            out.required = prop.required.filter((r: any) => typeof r === "string");
+        }
     }
 
-    try {
-        const cleaned: any = {
-            type: prop.type || "string",
-        };
-
-        const allowedFields = [
-            "description",
-            "examples",
-            "example",
-            "default",
-            "enum",
-            "pattern",
-            "minLength",
-            "maxLength",
-            "minimum",
-            "maximum",
-            "format",
-            "multipleOf",
-            "exclusiveMinimum",
-            "exclusiveMaximum",
-        ];
-
-        for (const field of allowedFields) {
-            if (prop[field] !== undefined && prop[field] !== null) {
-                cleaned[field] = prop[field];
-            }
-        }
-
-        if (prop.properties && typeof prop.properties === "object") {
-            cleaned.properties = {};
-            for (const [key, value] of Object.entries(prop.properties)) {
-                const cleanedNested = cleanProperty(value);
-                if (cleanedNested) {
-                    cleaned.properties[key] = cleanedNested;
-                }
-            }
-
-            if (Array.isArray(prop.required)) {
-                cleaned.required = prop.required.filter((r: any) => typeof r === "string");
-            }
-        }
-
-        if (prop.items) {
-            cleaned.items = cleanProperty(prop.items);
-        }
-
-        if (Array.isArray(prop.oneOf)) {
-            cleaned.oneOf = prop.oneOf.map(cleanProperty).filter(Boolean);
-        }
-        if (Array.isArray(prop.anyOf)) {
-            cleaned.anyOf = prop.anyOf.map(cleanProperty).filter(Boolean);
-        }
-        if (Array.isArray(prop.allOf)) {
-            cleaned.allOf = prop.allOf.map(cleanProperty).filter(Boolean);
-        }
-
-        return cleaned;
-    } catch (error) {
-        console.error("Error cleaning property:", error);
-        return null;
+    if (prop.items) {
+        out.items = cleanProperty(prop.items);
     }
+
+    if (Array.isArray(prop.oneOf)) out.oneOf = prop.oneOf.map(cleanProperty);
+    if (Array.isArray(prop.anyOf)) out.anyOf = prop.anyOf.map(cleanProperty);
+    if (Array.isArray(prop.allOf)) out.allOf = prop.allOf.map(cleanProperty);
+
+    return out;
 }
 
 /**
- * Bersihkan nama tool
+ * ============================
+ *  Extract Allowed Schema Fields
+ * ============================
  */
-function cleanToolName(name: string): string {
-    if (!name || typeof name !== "string") {
-        return "unnamed_tool";
-    }
+function extractSchemaDetails(schema: any) {
+    const allowed = [
+        "description",
+        "examples",
+        "example",
+        "default",
+        "enum",
+        "pattern",
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "format",
+        "multipleOf",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+    ];
 
-    try {
-        return name
-            .replace(/[{}]/g, "")
-            .replace(/[^a-zA-Z0-9_]/g, "_")
-            .replace(/_+/g, "_")
-            .replace(/^_|_$/g, "")
-            // keep lowercase and stable
-            .toLowerCase()
-            || "unnamed_tool";
-    } catch (error) {
-        console.error("Error cleaning tool name:", error);
-        return "unnamed_tool";
+    const out: any = {};
+    for (const f of allowed) {
+        if (schema[f] !== undefined) out[f] = schema[f];
     }
+    return out;
 }
 
 /**
- * Ambil OpenAPI JSON dari endpoint dan konversi ke tools MCP
- * - preserves exported name getMcpTools
- * - robust error handling and console diagnostics
+ * ============================
+ *  Clean tool name safely
+ * ============================
+ */
+function cleanToolName(value: string): string {
+    if (!value) return "unnamed_tool";
+
+    return value
+        .replace(/[{}]/g, "")
+        .replace(/[^a-zA-Z0-9_]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_|_$/g, "")
+        .toLowerCase() || "unnamed_tool";
+}
+
+/**
+ * ============================
+ *  Public: getMcpTools
+ * ============================
  */
 export async function getMcpTools(url: string, filterTag: string): Promise<McpTool[]> {
     try {
-        console.log(`Fetching OpenAPI spec from: ${url}`);
+        console.log(`Fetching OpenAPI spec: ${url}`);
 
-        const response = await fetch(url);
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+        const json = await res.json();
+        const tools = convertOpenApiToMcpTools(json, filterTag);
 
-        const openApiJson = await response.json();
-        const tools = convertOpenApiToMcpTools(openApiJson, filterTag);
-
-        console.log(`✅ Successfully generated ${tools.length} MCP tools`);
-
+        console.log(`Generated ${tools.length} MCP tools`);
         return tools;
-    } catch (error) {
-        console.error("Error fetching MCP tools:", error);
-        throw error;
+    } catch (err) {
+        console.error("Error fetching MCP Tools:", err);
+        throw err;
     }
 }
