@@ -300,7 +300,7 @@ async function handleMCPRequest(
 
             // Converter MCP content yang valid
             function convertToMcpContent(data: any) {
-                // Jika string → text
+                // String → text
                 if (typeof data === "string") {
                     return {
                         type: "text",
@@ -308,8 +308,8 @@ async function handleMCPRequest(
                     };
                 }
 
-                // Jika kirim tipe khusus image (base64)
-                if (data?.__mcp_type === "image" && typeof data.base64 === "string") {
+                // Image (dengan __mcp_type)
+                if (data?.__mcp_type === "image" && data.base64) {
                     return {
                         type: "image",
                         data: data.base64,
@@ -317,8 +317,8 @@ async function handleMCPRequest(
                     };
                 }
 
-                // Jika audio
-                if (data?.__mcp_type === "audio" && typeof data.base64 === "string") {
+                // Audio
+                if (data?.__mcp_type === "audio" && data.base64) {
                     return {
                         type: "audio",
                         data: data.base64,
@@ -326,30 +326,19 @@ async function handleMCPRequest(
                     };
                 }
 
-                // Jika resource link
-                if (data?.__mcp_type === "resource_link" && data.uri) {
-                    return {
-                        type: "resource_link",
-                        name: data.name || "resource",
-                        uri: data.uri,
-                    };
-                }
-
-                // Jika object biasa → jadikan resource (wrap arrays into object)
-                if (typeof data === "object") {
-                    const resource = Array.isArray(data) ? { items: data } : data;
-                    return {
-                        type: "resource",
-                        resource,
-                    };
-                }
-
-                // fallback → text stringified
+                // Semua lainnya → text (untuk mencegah error Zod union)
                 return {
                     type: "text",
-                    text: JSON.stringify(data, null, 2),
+                    text: (() => {
+                        try {
+                            return JSON.stringify(data, null, 2);
+                        } catch {
+                            return String(data);
+                        }
+                    })(),
                 };
             }
+
 
             try {
                 const baseUrl = credentials?.baseUrl;
