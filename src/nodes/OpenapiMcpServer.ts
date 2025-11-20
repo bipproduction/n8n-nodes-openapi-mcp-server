@@ -19,9 +19,11 @@ const toolsCache = new Map<string, CachedTools>();
 // ======================================================
 // Load OpenAPI → MCP Tools
 // (preserves original function name loadTools)
+// NOTE: filterTag now supports string | string[] (multi-select)
 // ======================================================
-async function loadTools(openapiUrl: string, filterTag: string, forceRefresh = false): Promise<any[]> {
-    const cacheKey = `${openapiUrl}::${filterTag || ""}`;
+async function loadTools(openapiUrl: string, filterTag: string | string[] = "", forceRefresh = false): Promise<any[]> {
+    const normalizedFilterKey = Array.isArray(filterTag) ? filterTag.join("|") : (filterTag ?? "");
+    const cacheKey = `${openapiUrl}::${normalizedFilterKey}`;
 
     try {
         const cached = toolsCache.get(cacheKey);
@@ -29,8 +31,9 @@ async function loadTools(openapiUrl: string, filterTag: string, forceRefresh = f
             return cached.tools;
         }
 
-        console.log(`[MCP] 🔄 Refreshing tools from ${openapiUrl} ...`);
-        const fetched = await getMcpTools(openapiUrl, filterTag);
+        console.log(`[MCP] 🔄 Refreshing tools from ${openapiUrl} with filter '${normalizedFilterKey}' ...`);
+        // Pass through filterTag in original shape (string | string[]) to getMcpTools.
+        const fetched = await getMcpTools(openapiUrl, filterTag as any);
 
         console.log(`[MCP] ✅ Loaded ${fetched.length} tools`);
         if (fetched.length > 0) {
@@ -369,18 +372,18 @@ export class OpenapiMcpServer implements INodeType {
             },
 
             // ======================================================
-            // ⬇⬇⬇ UPDATED: Default Filter menjadi dropdown tag
+            // ⬇⬇⬇ UPDATED: Default Filter sekarang multi-select (multiOptions)
             // ======================================================
             {
                 displayName: 'Default Filter',
                 name: 'defaultFilter',
-                type: 'options',
+                type: 'multiOptions', // <-- multi-select
                 typeOptions: {
                     loadOptionsMethod: 'loadAvailableTags',
                     refreshOnOpen: true,
                 },
-                default: 'all',
-                description: 'Filter berdasarkan tag dari OpenAPI',
+                default: [], // empty means no tag filtering (or 'All' in loader)
+                description: 'Filter berdasarkan tag dari OpenAPI (multi-select supported)',
             },
             // ======================================================
 
@@ -393,7 +396,7 @@ export class OpenapiMcpServer implements INodeType {
                     refreshOnOpen: true,
                 },
                 default: 'all',
-                description: 'Daftar tools yang berhasil dimuat dari OpenAPI',
+                description: 'Daftar tools yang berhasil dimuat dari OpenAPI (tergantung Default Filter)',
             },
         ],
     };
@@ -404,7 +407,7 @@ export class OpenapiMcpServer implements INodeType {
     methods = {
         loadOptions: {
             // ========================================================
-            // ⬇⬇⬇ NEW: dropdown tag loader
+            // ⬇⬇⬇ NEW: dropdown tag loader (unchanged)
             // ========================================================
             async loadAvailableTags(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
                 const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
@@ -426,6 +429,7 @@ export class OpenapiMcpServer implements INodeType {
 
                     const unique = Array.from(new Set(tags));
 
+                    // include an "All" option; users can still select none (empty array) which we'll treat as "all"
                     return [
                         { name: "All", value: "all" },
                         ...unique.map((t) => ({
@@ -440,15 +444,19 @@ export class OpenapiMcpServer implements INodeType {
             },
             // ========================================================
 
+            // ========================================================
+            // ⬇⬇⬇ UPDATED: refreshToolList now reads multi-select defaultFilter (string | string[])
+            // ========================================================
             async refreshToolList(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
                 const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
-                const filterTag = this.getNodeParameter("defaultFilter", 0) as string;
+                const filterTag = this.getNodeParameter("defaultFilter", 0) as string | string[]; // may be array
 
                 if (!openapiUrl) {
                     return [{ name: "❌ No OpenAPI URL provided", value: "" }];
                 }
 
-                const tools = await loadTools(openapiUrl, filterTag, true);
+                // Pass the filterTag in its native shape to loadTools
+                const tools = await loadTools(openapiUrl, filterTag as any, true);
 
                 return [
                     { name: "All Tools", value: "all" },
@@ -459,6 +467,7 @@ export class OpenapiMcpServer implements INodeType {
                     })),
                 ];
             },
+            // ========================================================
         },
     };
 
@@ -467,9 +476,9 @@ export class OpenapiMcpServer implements INodeType {
     // ==================================================
     async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
         const openapiUrl = this.getNodeParameter("openapiUrl", 0) as string;
-        const filterTag = this.getNodeParameter("defaultFilter", 0) as string;
+        const filterTag = this.getNodeParameter("defaultFilter", 0) as string | string[]; // multi-select support
 
-        const tools = await loadTools(openapiUrl, filterTag, false);
+        const tools = await loadTools(openapiUrl, filterTag as any, false);
 
         const creds = await this.getCredentials("openapiMcpServerCredentials") as {
             baseUrl: string;
