@@ -8,7 +8,9 @@
     "version:update": "bun bin/version_update.ts",
     "publish": "bun bin/version_update.ts && bun bin/build.ts && bun bin/publish.ts"
   },
-  "dependencies": {},
+  "dependencies": {
+    "lodash": "^4.17.21"
+  },
   "devDependencies": {
     "express": "^5.1.0",
     "@types/bun": "latest",
@@ -20,8 +22,7 @@
     "n8n-workflow": "^1.116.0",
     "nock": "^14.0.10",
     "ssh2": "^1.17.0",
-    "dedent": "^1.7.0",
-    "lodash": "^4.17.21"
+    "dedent": "^1.7.0"
   },
   "peerDependencies": {
     "typescript": "^5"
