@@ -205,6 +205,58 @@ async function handleMCPRequest(
                 };
             }
 
+            // Converter MCP content yang valid
+            function convertToMcpContent(data: any) {
+                // Jika string → text
+                if (typeof data === "string") {
+                    return {
+                        type: "text",
+                        text: data,
+                    };
+                }
+
+                // Jika kirim tipe khusus image
+                if (data?.__mcp_type === "image") {
+                    return {
+                        type: "image",
+                        data: data.base64,
+                        mimeType: data.mimeType || "image/png",
+                    };
+                }
+
+                // Jika audio
+                if (data?.__mcp_type === "audio") {
+                    return {
+                        type: "audio",
+                        data: data.base64,
+                        mimeType: data.mimeType || "audio/mpeg",
+                    };
+                }
+
+                // Jika resource link
+                if (data?.__mcp_type === "resource_link") {
+                    return {
+                        type: "resource_link",
+                        name: data.name || "resource",
+                        uri: data.uri,
+                    };
+                }
+
+                // Jika object biasa → jadikan resource
+                if (typeof data === "object") {
+                    return {
+                        type: "resource",
+                        resource: data,
+                    };
+                }
+
+                // fallback → text stringified
+                return {
+                    type: "text",
+                    text: JSON.stringify(data, null, 2),
+                };
+            }
+
             try {
                 const baseUrl = credentials?.baseUrl;
                 const token = credentials?.token;
@@ -216,17 +268,13 @@ async function handleMCPRequest(
                     token
                 );
 
-                const content = result.data?.data ?? result.data;
+                const raw = result.data?.data ?? result.data;
 
                 return {
                     jsonrpc: "2.0",
                     id,
                     result: {
-                        content: [
-                            typeof content === "object"
-                                ? { type: "json", data: content }
-                                : { type: "text", text: JSON.stringify(content) },
-                        ],
+                        content: [convertToMcpContent(raw)],
                     },
                 };
             } catch (err: any) {
@@ -237,6 +285,7 @@ async function handleMCPRequest(
                 };
             }
         }
+
 
         case "ping":
             return { jsonrpc: "2.0", id, result: {} };
